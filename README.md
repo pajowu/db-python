@@ -1,6 +1,6 @@
 # db-python
 
-Eine einfache Library für die unter `http://reiseauskunft.bahn.de` erreichbare Schnittstelle der Bahn.
+Eine einfache Library für die unter `http://reiseauskunft.bahn.de` erreichbare Schnittstelle der Bahn. Diese API wird u.a. für die "DB-Navigator"-App verwendet.
 
 # Features
 
