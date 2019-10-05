@@ -6,17 +6,24 @@ from Crypto.Cipher import AES
 import codecs
 import datetime
 import re
+
+
+
 class BahnAPI():
     debug = False
-    base_url = "http://reiseauskunft.bahn.de/bin/mgate.exe?checksum={checksum}"
-    redtnCards = {"25_1": 1, "25_2": 2, "50_1": 3, "50_2": 4}
+    base_url = "https://reiseauskunft.bahn.de/bin/mgate.exe?checksum={checksum}"
+    redtnCards = {"": 0, "25_1": 1, "25_2": 2, "50_1": 3, "50_2": 4}
     traveler_types = {"adult": "E", "child": "K", "infant": "B"}
+    aid = "rGhXPq+xAlvJd8T8cMnojdD0IoaOY53X7DPAbcXYe5g=" # from res/raw/haf_config.properties of DBNavigator
+    aid2 = "n91dB8Z77MLdoR0K" # from res/raw/haf_config.properties of DBNavigator
+    key = bytes([97, 72, 54, 70, 56, 122, 82, 117, 105, 66, 110, 109, 51, 51, 102, 85]) # from de/hafas/g/a/b.java of DBNavigator
     def searchLocation(self, term):
-        data = {"svcReqL":[{"meth":"LocMatch","req":{"input":{"field":"S","loc":{"name":term}}}}]}
+        data = {"svcReqL":[{"meth":"LocMatch","req":{"input":{"field":"S","loc":{"name":term,"type": "S"}}}}]}
         search_request = self.sendPostRequest(data)
+        print(search_request.text)
         response = self.cleanResponse(search_request.json())
         search_results = []
-        if response["cInfo"]["code"] == "OK":
+        if response["svcResL"][0]["err"] == "OK":
             for response_part in response["svcResL"]:
                 if response_part["err"] == "OK" and response_part["meth"] == "LocMatch":
                     for result in response_part["res"]["match"]["locL"]:
@@ -37,7 +44,8 @@ class BahnAPI():
         if self.debug:
             print(json.dumps(response, indent=4))
 
-        if response["cInfo"]["code"] == "OK":
+        print(response)
+        if response["svcResL"][0]["err"] == "OK":
             for response_part in response["svcResL"]:
                 if response_part["err"] == "OK" and response_part["meth"] == "TripSearch":
                     commons = response_part["res"]["common"]
@@ -71,30 +79,59 @@ class BahnAPI():
                             section_dict =  {
                                 "departure": {
                                     "time": self.getFinalTime(result["date"], result["dep"]["dTimeS"]),
-                                    "platform": section["dep"]["dPlatfS"],
+                                    #"platform": section["dep"]["dPlatfS"],
                                     "location": commons["locL"][section["dep"]["locX"]]["name"]
                                 },
                                 "arrival": {
                                     "time": self.getFinalTime(result["date"], result["arr"]["aTimeS"]),
-                                    "platform": section["arr"]["aPlatfS"],
+                                    #"platform": section["arr"]["aPlatfS"],
                                     "location": commons["locL"][section["arr"]["locX"]]["name"]
                                 },
                                 "stops": []
                             }
                             section_dict["duration"] = section_dict["arrival"]["time"] - section_dict["departure"]["time"]
 
-                            for stop in section["jny"]["stopL"]:
-                                loc = commons["locL"][stop["locX"]]
-                                stop_dict = {
-                                    "stop":loc,
-                                    "platform": stop["aPlatfS"] if "aPlatfS" in stop else stop["dPlatfS"] if "dPlatfS" in stop else None
-                                }
-                                if "dTimeS" in stop: stop_dict["departure"] =  {"time": self.getFinalTime(result["date"], stop["dTimeS"])}
-                                if "aTimeS" in stop: stop_dict["arrival"] =  {"time": self.getFinalTime(result["date"], stop["aTimeS"])}
+                            if "jny" in section:
+                                for stop in section["jny"]["stopL"]:
+                                    loc = commons["locL"][stop["locX"]]
+                                    stop_dict = {
+                                        "stop":loc,
+                                        #"platform": stop["aPlatfS"] if "aPlatfS" in stop else stop["dPlatfS"] if "dPlatfS" in stop else None
+                                    }
+                                    if "dTimeS" in stop: stop_dict["departure"] =  {"time": self.getFinalTime(result["date"], stop["dTimeS"])}
+                                    if "aTimeS" in stop: stop_dict["arrival"] =  {"time": self.getFinalTime(result["date"], stop["aTimeS"])}
                             result_dict["sections"].append(section_dict)
                         search_results["results"].append(result_dict)
 
         return search_results
+
+    def stationBoard(self, station, start_datetime=datetime.datetime.now(), duration=60):
+        station = self.searchLocation(station)[0]
+        data = {"svcReqL": [
+                    {"cfg": { "polyEnc": "GPA" },
+                        "meth": "StationBoard",
+                        "req": {
+                            "date": start_datetime.strftime("%Y%m%d"),
+                            "dur": duration,
+                            "type": "DEP",
+                            "stbLoc": station,
+                            "time": start_datetime.strftime("%H:%M:%S")
+                        }
+                    }
+                ]
+            }
+        search_request = self.sendPostRequest(data)
+        response = self.cleanResponse(search_request.json())
+        clean_dict = {}
+        if response["svcResL"][0]["err"] == "OK":
+            for response_part in response["svcResL"]:
+                if response_part["err"] == "OK" and response_part["meth"] == "StationBoard":
+                    commons = response_part["res"]["common"]
+                    print(commons)
+                    for i in response_part["res"]["jnyL"]:
+                        if i["approxDelay"]:
+                            print(i)
+
 
     def parse_timedelta(self, time_str):
         regex = re.compile(r'(?P<days>\d{2})(?P<hours>\d{2})(?P<minutes>\d{2})(?P<seconds>\d{2})')
@@ -112,15 +149,17 @@ class BahnAPI():
         return datetime.datetime.strptime(start_date, "%Y%m%d") + dur
 
     def sendPostRequest(self, data, headers={}):
-        data["auth"] = {"aid":"n91dB8Z77MLdoR0K","type":"AID"} # from res/raw/haf_config.properties of DBNavigator
-        data["client"] = {"id":"DB","name":"DB Navigator","type":"AND","v":15120000}
-        data["ver"] = "1.10"
-        data["ext"] = "DB.R15.12.a"
+        print(self.aid2)
+        data["auth"] = {"aid":self.aid2 ,"type":"AID"} # from res/raw/haf_config.properties of DBNavigator
+        data["client"] = {"id":"DB","name":"DB Navigator","type":"IPH","v":"19040000", "os":"iOS 13.1.2"}
+        data["ver"] = "1.15"
+        data["ext"] = "DB.R19.04.a"
+        data["lang"] = "de"
         data = json.dumps(data)
         chk = self.generateChecksum(data)
         url = self.base_url.format(checksum = chk)
-        request = requests.post(url, data=data)
-        return request
+        req = requests.post(url, data=data, headers={"User-Agent":"DB Navigator/19.10.04 (iPhone; iOS 13.1.2; Scale/2.00)", "Authorization":"Basic Og== ", "Content-Type":"application/json"})
+        return req
 
     def cleanResponse(self, data):
         return data
@@ -132,11 +171,11 @@ class BahnAPI():
 
     def getSecret(self):
         unpad = lambda s : s[:-ord(s[len(s)-1:])] # http://stackoverflow.com/a/12525165/3890934
-        enc = base64.b64decode("rGhXPq+xAlvJd8T8cMnojdD0IoaOY53X7DPAbcXYe5g=") # from res/raw/haf_config.properties of DBNavigator
-        key = bytes([97, 72, 54, 70, 56, 122, 82, 117, 105, 66, 110, 109, 51, 51, 102, 85]) # from de/hafas/g/a/b.java of DBNavigator
+        enc = base64.b64decode(self.aid)
         iv = codecs.decode("00"*16, "hex")
-        cipher = AES.new(key, AES.MODE_CBC, iv)
+        cipher = AES.new(self.key, AES.MODE_CBC, iv)
         dec = unpad(cipher.decrypt(enc).decode("utf-8"))
+        print(dec)
         return dec
 
 if __name__ == "__main__":
